@@ -63,7 +63,7 @@ from vllm_ascend.spec_decode.utils import (
     build_parallel_draft_seq_lens_cpu,
     patch_tensor_parallel_group,
 )
-from vllm_ascend.utils import check_gdn_layer, enable_sp, lmhead_tp_enable
+from vllm_ascend.utils import check_gdn_layer, enable_sp, lmhead_tp_enable, should_skip_allreduce_across_dp_group
 
 # Currently we will fix block size to a small one since `num_reqs` can't be too large
 _PREPARE_INPUTS_BLOCK_SIZE = 4
@@ -1307,6 +1307,19 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
             logits = self.model.compute_logits(hidden_states)
             return greedy_sample(logits)
 
+    def _get_lmhead_pad_size(self, num_input_tokens: int) -> int:
+        pad_size = self.vllm_config.scheduler_config.max_num_seqs * self.runner.uniform_decode_query_len
+        if (
+            self.method == "mtp"
+            and self.dcp_size == 1
+            and not should_skip_allreduce_across_dp_group(self.vllm_config, is_draft_model=True)
+        ):
+            # Both real and dummy runs synchronize num_input_tokens before
+            # entering the runnable. Use that bucket for capture and replay;
+            # local hidden-state lengths need not match across LMHead ranks.
+            pad_size = min(pad_size, num_input_tokens)
+        return pad_size
+
     def _run_merged_draft(
         self,
         num_input_tokens,
@@ -1318,6 +1331,7 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
         num_tokens,
         is_prefill=None,
     ) -> torch.Tensor:
+        lmhead_pad_size = self._get_lmhead_pad_size(num_input_tokens) if lmhead_tp_enable() else None
         # The lifecycle of `input_ids`, `positions`, `hidden_states` runs through all
         # speculative tokens' proposings. `model_input_ids`, `model_positions` and
         # `model_hidden_states` represent the speculative model inputs.
@@ -1366,9 +1380,7 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
                 token_indices_to_sample = token_indices_to_sample[:num_indices]
                 max_num_reqs_across_dp = (num_input_tokens // self.num_query_per_req) * self.num_speculative_tokens
             else:
-                max_num_reqs_across_dp = (
-                    self.vllm_config.scheduler_config.max_num_seqs * self.runner.uniform_decode_query_len
-                )
+                max_num_reqs_across_dp = lmhead_pad_size
             # It is necessary to evaluate the case where num_indices becomes large
             # in the context of the dummy-run accompaniment of p-eagle.
             if num_indices > max_num_reqs_across_dp:
@@ -1565,12 +1577,9 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
 
             num_indices = token_indices_to_sample.shape[0]
             if lmhead_tp_enable():
-                max_num_reqs_across_dp = (
-                    self.vllm_config.scheduler_config.max_num_seqs * self.runner.uniform_decode_query_len
-                )
                 token_indices_to_sample = nn.functional.pad(
                     token_indices_to_sample,
-                    (0, max_num_reqs_across_dp - num_indices),
+                    (0, lmhead_pad_size - num_indices),
                 )
 
             sample_hidden_states = last_hidden_states[token_indices_to_sample]
