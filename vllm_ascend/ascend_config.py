@@ -349,7 +349,10 @@ class AscendConfig:
         if not isinstance(self.enable_lmhead_alltoallv, bool):
             raise ValueError("enable_lmhead_alltoallv must be a boolean")
         if self.enable_lmhead_alltoallv and self.enable_reduce_sample:
-            raise ValueError("enable_lmhead_alltoallv requires enable_reduce_sample=false")
+            logger.warning(
+                "enable_lmhead_alltoallv is inactive when enable_reduce_sample=true; "
+                "using the existing reduce-sample path."
+            )
 
         self.mix_placement = additional_config.get("mix_placement", False)
         self._check_mix_placement()

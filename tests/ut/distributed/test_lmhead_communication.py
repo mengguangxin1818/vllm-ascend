@@ -14,7 +14,7 @@ import unittest
 from datetime import timedelta
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import torch
 import torch.distributed as dist
@@ -255,10 +255,25 @@ class TestLMHeadOption(unittest.TestCase):
         for settings in (
             {"enable_lmhead_alltoallv": "true"},
             {"enable_lmhead_alltoallv": 1},
-            {"enable_lmhead_alltoallv": True, "enable_reduce_sample": True},
         ):
             with self.subTest(settings=settings), self.assertRaises(ValueError):
                 exec(code, {"self": SimpleNamespace(), "additional_config": settings})
+
+        config = SimpleNamespace()
+        logger = Mock()
+        exec(
+            code,
+            {
+                "self": config,
+                "additional_config": {"enable_lmhead_alltoallv": True, "enable_reduce_sample": True},
+                "logger": logger,
+            },
+        )
+        logger.warning.assert_called_once_with(
+            "enable_lmhead_alltoallv is inactive when enable_reduce_sample=true; using the existing reduce-sample path."
+        )
+        self.assertTrue(config.enable_reduce_sample)
+        self.assertTrue(config.enable_lmhead_alltoallv)
 
 
 class TestLMHeadConfiguration(unittest.TestCase):

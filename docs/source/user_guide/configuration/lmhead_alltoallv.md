@@ -14,7 +14,9 @@ The option defaults to false. It activates separately for target post-forward
 logits and eager MTP logits, only when the existing DP metadata synchronization
 is skipped. The initial implementation requires PP=PCP=DCP=1 and no LoRA.
 Other configurations retain the existing padding path. Combining this option
-with reduce sampling is rejected. Startup logs report activation for each model.
+with reduce sampling emits a warning and retains the existing reduce-sample
+path; variable-size LMHead exchange remains inactive. Startup logs report
+activation for each model.
 
 Each LMHead call performs four phases:
 
