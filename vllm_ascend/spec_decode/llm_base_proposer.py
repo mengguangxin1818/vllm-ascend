@@ -50,7 +50,7 @@ from vllm_ascend.device.device_op import DeviceOperator
 from vllm_ascend.distributed.kv_transfer.sparse_kv_offload.sparse_kv_offload_manager import (
     prepare_sparse_kv_offload_mtp_dummy_metadata,
 )
-from vllm_ascend.distributed.parallel_state import get_lmhead_tp_group
+from vllm_ascend.distributed.parallel_state import get_sampling_tp_group
 from vllm_ascend.models.deepseek_v4_dspark import DSparkDeepseekV4ForCausalLM
 from vllm_ascend.models.kimi_k3_dspark import K3DSparkForCausalLM
 from vllm_ascend.models.llama_eagle3_vwn import Eagle3VwnLlamaForCausalLM
@@ -91,7 +91,10 @@ def split_inputs_tp_to_sp(hidden_states, out):
 
 
 def greedy_sample(logits: torch.Tensor) -> torch.Tensor:
-    tp_group = get_tp_group()
+    if lmhead_tp_enable():
+        # LM head TP returns this DP rank's logits in full vocabulary order.
+        return logits.argmax(dim=-1)
+    tp_group = get_sampling_tp_group()
     B, V_local = logits.shape
     rank = tp_group.rank_in_group
 
@@ -1408,9 +1411,7 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
                     )
             else:
                 logits = self.model.compute_logits(sample_hidden_states)
-                if lmhead_tp_enable():
-                    logits = get_lmhead_tp_group().all_to_all(logits)
-                else:
+                if not lmhead_tp_enable():
                     logits = self.model.model.logits_processor._gather_logits(logits)
                 if lmhead_tp_enable():
                     logits, token_indices_to_sample = self._align_tensor_and_indices(
@@ -1591,9 +1592,7 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
                         token_indices_to_sample = token_indices_to_sample[:num_indices]
                 else:
                     logits = self.model.compute_logits(sample_hidden_states)
-                    if lmhead_tp_enable():
-                        logits = get_lmhead_tp_group().all_to_all(logits)
-                    else:
+                    if not lmhead_tp_enable():
                         logits = self.model.model.logits_processor._gather_logits(logits)
                     if lmhead_tp_enable() and num_indices < logits.shape[0]:
                         logits = logits[:num_indices]

@@ -18,7 +18,7 @@
 import torch
 import vllm.envs as envs
 
-from vllm_ascend.ascend_config import get_ascend_config
+from vllm_ascend.ascend_config import get_ascend_config, use_vocab_parallel_sampling
 from vllm_ascend.sample.sampler import (
     DEFAULT_LOGPROBS_MODE,
     AscendSampler,
@@ -156,7 +156,7 @@ class AscendTopKTopPSampler310(AscendTopKTopPSampler):
     def forward_native(self, logits, generators, k, p):
         if envs.VLLM_BATCH_INVARIANT:
             return super().forward_native(logits, generators, k, p)
-        if get_ascend_config().enable_reduce_sample:
+        if use_vocab_parallel_sampling(get_ascend_config()):
             cand_logits, cand_idx = self.apply_top_k_top_p(logits, k, p, self.top_k)
             logits_to_return = None
             if self.logprobs_mode == "processed_logits":

@@ -1,6 +1,6 @@
 import torch
 from vllm.config import ParallelConfig, get_current_vllm_config
-from vllm.distributed.parallel_state import GroupCoordinator, get_world_group, init_model_parallel_group
+from vllm.distributed.parallel_state import GroupCoordinator, get_tp_group, get_world_group, init_model_parallel_group
 
 from vllm_ascend.ascend_config import get_ascend_config
 
@@ -156,6 +156,13 @@ def get_otp_group() -> GroupCoordinator:
 def get_lmhead_tp_group() -> GroupCoordinator:
     assert _LMTP is not None, "lm head tensor parallel group is not initialized"
     return _LMTP
+
+
+def get_sampling_tp_group() -> GroupCoordinator:
+    """Return the group that shards the LM head vocabulary."""
+    if get_ascend_config().finegrained_tp_config.lmhead_tensor_parallel_size > 0:
+        return get_lmhead_tp_group()
+    return get_tp_group()
 
 
 def get_embed_tp_group() -> GroupCoordinator:

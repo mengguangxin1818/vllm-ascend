@@ -22,7 +22,6 @@ from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.ascend_forward_context import _EXTRA_CTX, set_ascend_forward_context
 from vllm_ascend.attention.attention_v1 import AscendAttentionState
 from vllm_ascend.attention.utils import AscendCommonAttentionMetadata
-from vllm_ascend.distributed.parallel_state import get_lmhead_tp_group
 from vllm_ascend.spec_decode.eagle_proposer import AscendEagleProposer
 from vllm_ascend.utils import lmhead_tp_enable
 
@@ -194,9 +193,7 @@ class AscendStep3p5MTPProposer(AscendEagleProposer):
                     draft_token_ids = draft_token_ids[:num_indices]
                 return draft_token_ids, None
             logits = self.model.compute_logits(hidden_states, spec_step_idx=spec_step_idx)
-            if lmhead_tp_enable():
-                logits = get_lmhead_tp_group().all_to_all(logits)
-            else:
+            if not lmhead_tp_enable():
                 logits = self.model.model.logits_processor._gather_logits(logits)
         else:
             logits = self.model.compute_logits(hidden_states, spec_step_idx=spec_step_idx)

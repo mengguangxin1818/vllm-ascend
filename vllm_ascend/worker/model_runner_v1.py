@@ -95,7 +95,7 @@ from vllm.v1.outputs import (
     SamplerOutput,
     make_empty_encoder_model_runner_output,
 )
-from vllm.v1.sample.logits_processor import build_logitsprocs
+from vllm.v1.sample.logits_processor import BUILTIN_LOGITS_PROCESSORS, build_logitsprocs
 from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.sample.rejection_sampler import PLACEHOLDER_TOKEN_ID, RejectionSampler
 from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
@@ -111,7 +111,7 @@ from vllm.v1.worker.ubatch_utils import (
 from vllm.v1.worker.utils import AttentionGroup, select_common_block_size
 
 # yapf: enable
-from vllm_ascend.ascend_config import get_ascend_config
+from vllm_ascend.ascend_config import get_ascend_config, use_vocab_parallel_sampling
 from vllm_ascend.attention.attention_v1 import AscendAttentionBackend, AscendAttentionState
 from vllm_ascend.attention.context_parallel.dsa_cp import AscendDSACPMetadataBuilder
 from vllm_ascend.attention.context_parallel.sfa_cp import AscendSFADCPMetadataBuilder
@@ -141,6 +141,7 @@ from vllm_ascend.distributed.kv_transfer.sparse_kv_offload.sparse_kv_offload_man
     reshape_kv_cache_tensors_for_sparse_kv_offload,
     update_sparse_kv_offload_metadata,
 )
+from vllm_ascend.distributed.parallel_state import get_sampling_tp_group
 from vllm_ascend.distributed.utils import get_decode_context_model_parallel_world_size
 from vllm_ascend.eplb.adaptor.vllm_adaptor import VllmEplbAdaptor
 from vllm_ascend.eplb.core.eplb_device_transfer_loader import D2DExpertWeightLoader
@@ -149,8 +150,10 @@ from vllm_ascend.eplb.eplb_updator import EplbUpdator
 from vllm_ascend.model_executor.offloader import create_offloader
 from vllm_ascend.ops.rotary_embedding import set_cos_and_sin, update_cos_sin
 from vllm_ascend.ops.triton.spec_decode.ngram import triton_ngram_spec_decode
+from vllm_ascend.ops.vocab_parallel_embedding import lmhead_logits_reduction
 from vllm_ascend.patch.worker.patch_draft_quarot import patch_load_weights
 from vllm_ascend.quantization.utils import enable_fa_quant
+from vllm_ascend.sample.lmhead import get_lmhead_candidate_count, synchronize_lmhead_candidate_count
 from vllm_ascend.sample.sampler import AscendSampler
 from vllm_ascend.spec_decode import get_spec_decode_method
 from vllm_ascend.spec_decode.dflash_proposer import AscendDflashProposer
@@ -2184,7 +2187,7 @@ class NPUModelRunner(GPUModelRunner):
                     return output
 
                 sample_hidden_states = hidden_states[logits_indices]
-                logits = self.model.compute_logits(sample_hidden_states)
+                logits = self._compute_sampling_logits(sample_hidden_states, scheduler_output)
             else:
                 # Rare case.
                 assert not self.is_pooling_model
@@ -2195,7 +2198,7 @@ class NPUModelRunner(GPUModelRunner):
                     logits = None
                 else:
                     sample_hidden_states = hidden_states[logits_indices]
-                    logits = self.model.compute_logits(sample_hidden_states)
+                    logits = self._compute_sampling_logits(sample_hidden_states, scheduler_output)
 
                 model_output_broadcast_data: dict[str, Any] = {}
                 if logits is not None:
@@ -2462,6 +2465,36 @@ class NPUModelRunner(GPUModelRunner):
         )
         return async_output
 
+    def _compute_sampling_logits(self, hidden_states, scheduler_output=None):
+        if not (lmhead_tp_enable() and get_ascend_config().enable_reduce_sample):
+            return self.model.compute_logits(hidden_states)
+
+        # A dummy rank contributes one candidate; it must agree on the same
+        # plan as active ranks before entering the LM head collectives.
+        candidate_count = 1
+        if scheduler_output is not None:
+            metadata = self.input_batch.sampling_metadata
+            candidate_count = get_lmhead_candidate_count(
+                self.requests[req_id].sampling_params for req_id in self.input_batch.req_ids
+            )
+            if (
+                scheduler_output.has_structured_output_requests
+                or any(type(processor) not in BUILTIN_LOGITS_PROCESSORS for processor in metadata.logitsprocs.all)
+                # Random rejection and entropy verification can need original
+                # target probabilities, before top-k/top-p filtering.
+                or (
+                    self.speculative_config is not None
+                    and (
+                        not metadata.all_greedy
+                        or get_ascend_config().rejection_sampler_config.enable_entropy_verify
+                    )
+                )
+            ):
+                candidate_count = 0
+        candidate_count = synchronize_lmhead_candidate_count(candidate_count, get_sampling_tp_group())
+        with lmhead_logits_reduction(self.model, candidate_count):
+            return self.model.compute_logits(hidden_states)
+
     # overwrite _sample for lmhead_tp_enable and need_accepted_tokens
     def _sample(self, logits, spec_decode_metadata):
         # Sample the next token and get logprobs if needed.
@@ -2470,7 +2503,7 @@ class NPUModelRunner(GPUModelRunner):
         if spec_decode_metadata is None:
             if lmhead_tp_enable() and logits is not None:
                 logits = logits[: self.input_batch.num_reqs]
-            if self.input_batch.sampling_metadata.top_k is not None and get_ascend_config().enable_reduce_sample:
+            if sampling_metadata.top_k is not None and use_vocab_parallel_sampling(get_ascend_config()):
                 max_topk = self.input_batch.top_k_cpu[self.input_batch.top_k_cpu < logits.shape[1]].max()
                 self.sampler.prepare_sampling(max_topk)
             return self.sampler(
@@ -2480,7 +2513,7 @@ class NPUModelRunner(GPUModelRunner):
 
         if lmhead_tp_enable() and logits is not None:
             logits = logits[: len(spec_decode_metadata.logits_indices)]
-        if self.input_batch.sampling_metadata.top_k is not None and get_ascend_config().enable_reduce_sample:
+        if sampling_metadata.top_k is not None and use_vocab_parallel_sampling(get_ascend_config()):
             max_topk = self.input_batch.top_k_cpu[self.input_batch.top_k_cpu < logits.shape[1]].max()
             self.rejection_sampler.prepare_sampling(max_topk)
         draft_probs = (
@@ -3513,11 +3546,11 @@ class NPUModelRunner(GPUModelRunner):
             )
 
             def dummy_compute_logits(hidden_states):
-                if not need_dummy_logits:
+                if not need_dummy_logits or not get_pp_group().is_last_rank:
                     return None
                 lmhead_pad_size = self._get_lmhead_pad_size(num_tokens_across_dp)
                 indices = dummy_indices[:lmhead_pad_size]
-                return self.model.compute_logits(hidden_states[indices])
+                return self._compute_sampling_logits(hidden_states[indices])
 
             def dummy_drafter_compute_logits(hidden_states):
                 if not need_dummy_logits or self.drafter is None:

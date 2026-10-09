@@ -9,7 +9,7 @@ import torch
 from vllm.triton_utils import HAS_TRITON, triton
 from vllm.v1.sample.rejection_sampler import MAX_SPEC_LEN
 
-from vllm_ascend.ascend_config import get_ascend_config
+from vllm_ascend.ascend_config import get_ascend_config, use_vocab_parallel_sampling
 from vllm_ascend.ops.triton.reject_sample import (
     cal_grid_and_block_size,
     expand_triton,
@@ -347,7 +347,7 @@ def rejection_sampler_triton_warmup(worker: NPUWorker) -> None:
     vocab_size = min(worker.vllm_config.model_config.get_vocab_size(), _WARMUP_VOCAB_SIZE)
 
     ascend_config = get_ascend_config()
-    enable_reduce_sampling = bool(ascend_config.enable_reduce_sample)
+    enable_reduce_sampling = use_vocab_parallel_sampling(ascend_config)
     # Match rejection_sample: block verify needs config and max_spec_len >= 3.
     block_verify = max_spec_len >= 3 and bool(ascend_config.rejection_sampler_config.enable_block_verify)
     no_draft_probs_values = _collect_no_draft_probs_values(

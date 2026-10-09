@@ -16,6 +16,9 @@
 #
 
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 import torch
 import torch.distributed as dist
 from torch import nn
@@ -38,7 +41,8 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
 from vllm.model_executor.utils import set_weight_attrs
 
 from vllm_ascend.ascend_config import get_ascend_config
-from vllm_ascend.distributed.parallel_state import get_embed_tp_group, get_lmhead_tp_group
+from vllm_ascend.distributed.parallel_state import get_embed_tp_group, get_lmhead_tp_group, get_sampling_tp_group
+from vllm_ascend.sample.lmhead import reduce_lmhead_logits
 from vllm_ascend.utils import embedding_tp_enable, get_potential_max_tokens, lmhead_tp_enable
 
 
@@ -288,6 +292,23 @@ class AscendLogitsProcessor(LogitsProcessor):
     Added the feature of lmheadTP in pure dp scenario
     """
 
+    lmhead_candidate_count: int = 0
+
+    def forward(self, lm_head, hidden_states, embedding_bias=None):
+        logits = super().forward(lm_head, hidden_states, embedding_bias)
+        if lmhead_tp_enable() and self.lmhead_candidate_count > 0 and not self.logits_as_input:
+            # Reduce after scale/soft-cap: applying soft-cap to the reconstructed
+            # -inf entries would turn discarded tokens into finite candidates.
+            logits = reduce_lmhead_logits(
+                logits,
+                self.lmhead_candidate_count,
+                lm_head.shard_indices.org_vocab_start_index,
+                lm_head.num_org_embeddings_per_partition,
+                self.org_vocab_size,
+                get_sampling_tp_group(),
+            )
+        return logits
+
     def _apply_head(
         self,
         lm_head: AscendParallelLMHead,
@@ -316,17 +337,14 @@ class AscendLogitsProcessor(LogitsProcessor):
         # Gather hidden states from all devices in tensor parallel group
         gathered_hidden_states = get_lmhead_tp_group().all_gather(hidden_states, dim=0)
         logits = self._apply_head(lm_head, gathered_hidden_states, embedding_bias)
-        # Gather logits for tensor parallel
-        if not get_ascend_config().enable_reduce_sample:
-            logits = get_lmhead_tp_group().all_to_all(logits)
-
-        # Remove paddings in vocab (if any)
-        if logits is not None:
-            if not get_ascend_config().enable_reduce_sample:
-                logits = logits[..., : self.org_vocab_size]
-            else:
-                logits = logits[..., : lm_head.num_org_embeddings_per_partition]
-        return logits
+        if self.lmhead_candidate_count > 0:
+            # Keep uniform vocabulary widths and all padded DP rows until the
+            # candidate exchange in forward. Dummy ranks follow this path too.
+            return logits
+        # Requests needing full logits, and callers without a reduction plan,
+        # use the original LM head exchange. Sampling is then entirely local.
+        logits = get_lmhead_tp_group().all_to_all(logits)
+        return logits[..., : self.org_vocab_size]
 
     def _get_logits_normal(
         self,
@@ -347,3 +365,17 @@ class AscendLogitsProcessor(LogitsProcessor):
                 logits = logits[..., : lm_head.num_org_embeddings_per_partition]
 
         return logits
+
+
+@contextmanager
+def lmhead_logits_reduction(model: nn.Module, candidate_count: int) -> Iterator[None]:
+    """Scope a group-wide reduction plan to one target-model logits call."""
+    processors = [module for module in model.modules() if isinstance(module, AscendLogitsProcessor)]
+    previous_counts = [processor.lmhead_candidate_count for processor in processors]
+    try:
+        for processor in processors:
+            processor.lmhead_candidate_count = candidate_count
+        yield
+    finally:
+        for processor, previous_count in zip(processors, previous_counts):
+            processor.lmhead_candidate_count = previous_count

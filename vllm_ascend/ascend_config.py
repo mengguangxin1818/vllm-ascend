@@ -27,6 +27,15 @@ if TYPE_CHECKING:
 _CANN_OPS_TRANSFORMER_AVAILABLE = importlib.util.find_spec("cann_ops_transformer") is not None
 
 
+def use_vocab_parallel_sampling(config: "AscendConfig") -> bool:
+    """Whether the sampler receives vocabulary shards of the same requests.
+
+    LM head TP exchanges its candidates during compute_logits, including on
+    idle DP ranks. Its sampler receives local requests in vocabulary order.
+    """
+    return config.enable_reduce_sample and config.finegrained_tp_config.lmhead_tensor_parallel_size == 0
+
+
 def is_megamoe_supported_by_config(vllm_config) -> bool:
     hf_text_config = vllm_config.model_config.hf_text_config
     hidden_size = getattr(hf_text_config, "hidden_size", None)

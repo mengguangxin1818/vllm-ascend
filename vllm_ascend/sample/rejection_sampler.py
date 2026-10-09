@@ -4,7 +4,6 @@ import logging
 from dataclasses import replace
 
 import torch
-from vllm.distributed.parallel_state import get_tp_group
 from vllm.logger import logger
 from vllm.triton_utils import HAS_TRITON
 from vllm.v1.outputs import SamplerOutput
@@ -21,7 +20,8 @@ from vllm.v1.sample.rejection_sampler import (
 from vllm.v1.sample.sampler import Sampler
 from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
 
-from vllm_ascend.ascend_config import get_ascend_config
+from vllm_ascend.ascend_config import get_ascend_config, use_vocab_parallel_sampling
+from vllm_ascend.distributed.parallel_state import get_sampling_tp_group
 from vllm_ascend.ops.triton.reject_sample import (
     cal_grid_and_block_size,
     expand_triton,
@@ -326,7 +326,7 @@ class AscendRejectionSampler(RejectionSampler):
 
 
 def greedy_sample(logits: torch.Tensor) -> torch.Tensor:
-    tp_group = get_tp_group()
+    tp_group = get_sampling_tp_group()
     B, V_local = logits.shape
     rank = tp_group.rank_in_group
 
@@ -403,7 +403,7 @@ def apply_sampling_constraints(
 
     # New flow: top_k -> allgather -> top_p
     # Returns processed logits and indices
-    if get_ascend_config().enable_reduce_sample:
+    if use_vocab_parallel_sampling(get_ascend_config()):
         logger.debug_once(
             "[sample/rejection_sampler] Using reduce-sample path for "
             "apply_sampling_constraints. top-k/top-p with TP all-gather.",
@@ -560,7 +560,7 @@ def rejection_sample(
 
     # For greedy sampling, we need to do allgather first to get global argmax
     if not sampling_metadata.all_random:
-        if get_ascend_config().enable_reduce_sample:
+        if use_vocab_parallel_sampling(get_ascend_config()):
             target_argmax = greedy_sample(target_logits)
         else:
             target_argmax = target_logits.argmax(dim=-1).view(-1)
