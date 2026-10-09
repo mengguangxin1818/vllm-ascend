@@ -141,6 +141,7 @@ from vllm_ascend.distributed.kv_transfer.sparse_kv_offload.sparse_kv_offload_man
     reshape_kv_cache_tensors_for_sparse_kv_offload,
     update_sparse_kv_offload_metadata,
 )
+from vllm_ascend.distributed.lmhead_communication import configure_lmhead_alltoallv
 from vllm_ascend.distributed.utils import get_decode_context_model_parallel_world_size
 from vllm_ascend.eplb.adaptor.vllm_adaptor import VllmEplbAdaptor
 from vllm_ascend.eplb.core.eplb_device_transfer_loader import D2DExpertWeightLoader
@@ -302,6 +303,7 @@ class NPUModelRunner(GPUModelRunner):
             super().__init__(vllm_config, device)
 
         self.pin_memory = PIN_MEMORY
+        self.lmhead_alltoallv_enabled = False
 
         set_offloader(create_offloader(self.offload_config))
 
@@ -2157,7 +2159,11 @@ class NPUModelRunner(GPUModelRunner):
                 num_tokens_padded, input_ids, positions, intermediate_tensors, inputs_embeds, **model_kwargs
             )
         with record_function_or_nullcontext("post process"):
-            if lmhead_tp_enable():
+            if self.lmhead_alltoallv_enabled:
+                # Keep graph/attention preparation unchanged. Only the
+                # graph-external LMHead consumes the unpadded sampling indices.
+                logits_indices = self.logits_indices
+            elif lmhead_tp_enable():
                 lmhead_pad_size = self._get_lmhead_pad_size(num_tokens_across_dp)
                 logits_indices = logits_indices[:lmhead_pad_size]
             aux_hidden_states = None
@@ -3515,6 +3521,10 @@ class NPUModelRunner(GPUModelRunner):
             def dummy_compute_logits(hidden_states):
                 if not need_dummy_logits:
                     return None
+                if self.lmhead_alltoallv_enabled:
+                    # Idle ranks still join both exchanges, but have no logits
+                    # to sample. Keep backbone dummy inputs unchanged.
+                    return self.model.compute_logits(hidden_states[:0])
                 lmhead_pad_size = self._get_lmhead_pad_size(num_tokens_across_dp)
                 indices = dummy_indices[:lmhead_pad_size]
                 return self.model.compute_logits(hidden_states[indices])
@@ -3645,6 +3655,10 @@ class NPUModelRunner(GPUModelRunner):
                 from vllm.model_executor.model_loader.default_loader import DefaultModelLoader
                 DefaultModelLoader._init_ep_weight_filter = mock_pass
             self.model: nn.Module = get_model(vllm_config=self.vllm_config)
+            if not self.is_pooling_model:
+                self.lmhead_alltoallv_enabled = configure_lmhead_alltoallv(self.model, self.vllm_config)
+            if self.lmhead_alltoallv_enabled:
+                logger.info("Enabled variable-size LMHead exchange for target post-forward logits.")
             for name, _ in self.model.named_parameters():
                 # sinks is a kind of parameter in attention
                 # only set in weight name

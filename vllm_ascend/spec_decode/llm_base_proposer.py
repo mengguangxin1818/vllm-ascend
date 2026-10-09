@@ -50,6 +50,7 @@ from vllm_ascend.device.device_op import DeviceOperator
 from vllm_ascend.distributed.kv_transfer.sparse_kv_offload.sparse_kv_offload_manager import (
     prepare_sparse_kv_offload_mtp_dummy_metadata,
 )
+from vllm_ascend.distributed.lmhead_communication import configure_lmhead_alltoallv
 from vllm_ascend.distributed.parallel_state import get_lmhead_tp_group
 from vllm_ascend.models.deepseek_v4_dspark import DSparkDeepseekV4ForCausalLM
 from vllm_ascend.models.kimi_k3_dspark import K3DSparkForCausalLM
@@ -128,6 +129,7 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
 
         # Assign runner before it's used in the methods below
         self.runner = runner
+        self.lmhead_alltoallv_enabled = False
 
         logger.debug(
             "[spec_decode/base] Initializing spec decode proposer: method=%s,"
@@ -535,6 +537,12 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
         self._maybe_share_embeddings(target_language_model)
         self._maybe_share_topk_indices(target_language_model)
         self._maybe_share_lm_head(model)
+        if self.method == "mtp" and not self.use_cuda_graph:
+            self.lmhead_alltoallv_enabled = configure_lmhead_alltoallv(
+                self.model, self.vllm_config, is_draft_model=True
+            )
+            if self.lmhead_alltoallv_enabled:
+                logger.info("Enabled variable-size LMHead exchange for eager MTP logits.")
         # The draft FC, embedding, and lm_head boundaries are now aligned.
         # Release the temporary full-precision rotation before graph capture.
         self._quarot_rotation = None
@@ -1331,7 +1339,8 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
         num_tokens,
         is_prefill=None,
     ) -> torch.Tensor:
-        lmhead_pad_size = self._get_lmhead_pad_size(num_input_tokens) if lmhead_tp_enable() else None
+        pad_lmhead = lmhead_tp_enable() and not self.lmhead_alltoallv_enabled
+        lmhead_pad_size = self._get_lmhead_pad_size(num_input_tokens) if pad_lmhead else None
         # The lifecycle of `input_ids`, `positions`, `hidden_states` runs through all
         # speculative tokens' proposings. `model_input_ids`, `model_positions` and
         # `model_hidden_states` represent the speculative model inputs.
@@ -1372,7 +1381,8 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
             )
 
         num_indices = token_indices_to_sample.shape[0]
-        if lmhead_tp_enable():
+        ori_token_indices_to_sample = None
+        if pad_lmhead:
             if self.method == "dspark":
                 # DSpark draft decoding runs outside ACLGraph. Its real LMHead
                 # input is B * K; only pad it to the current target graph bucket.
@@ -1388,7 +1398,7 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
             else:
                 ori_token_indices_to_sample = None
 
-        if lmhead_tp_enable():
+        if pad_lmhead:
             token_indices_to_sample = nn.functional.pad(
                 token_indices_to_sample, (0, max_num_reqs_across_dp - num_indices)
             )
@@ -1576,7 +1586,7 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
             )
 
             num_indices = token_indices_to_sample.shape[0]
-            if lmhead_tp_enable():
+            if pad_lmhead:
                 token_indices_to_sample = nn.functional.pad(
                     token_indices_to_sample,
                     (0, lmhead_pad_size - num_indices),

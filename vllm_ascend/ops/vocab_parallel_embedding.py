@@ -38,6 +38,7 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
 from vllm.model_executor.utils import set_weight_attrs
 
 from vllm_ascend.ascend_config import get_ascend_config
+from vllm_ascend.distributed.lmhead_communication import gather_lmhead_hidden_states, scatter_lmhead_logits
 from vllm_ascend.distributed.parallel_state import get_embed_tp_group, get_lmhead_tp_group
 from vllm_ascend.utils import embedding_tp_enable, get_potential_max_tokens, lmhead_tp_enable
 
@@ -313,6 +314,14 @@ class AscendLogitsProcessor(LogitsProcessor):
         lm_head: AscendParallelLMHead,
         embedding_bias: torch.Tensor | None,
     ) -> torch.Tensor | None:
+        if getattr(self, "lmhead_alltoallv_enabled", False):
+            group = get_lmhead_tp_group()
+            gathered_hidden_states, sizes = gather_lmhead_hidden_states(hidden_states, group)
+            if sum(sizes) == 0:
+                return hidden_states.new_empty((0, self.org_vocab_size), dtype=self.head_dtype or hidden_states.dtype)
+            logits = self._apply_head(lm_head, gathered_hidden_states, embedding_bias)
+            return scatter_lmhead_logits(logits, sizes, group)[..., : self.org_vocab_size]
+
         # Gather hidden states from all devices in tensor parallel group
         gathered_hidden_states = get_lmhead_tp_group().all_gather(hidden_states, dim=0)
         logits = self._apply_head(lm_head, gathered_hidden_states, embedding_bias)

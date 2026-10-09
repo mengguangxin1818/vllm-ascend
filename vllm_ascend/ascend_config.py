@@ -344,6 +344,12 @@ class AscendConfig:
 
         # Enable optimized reduce sampling scheme
         self.enable_reduce_sample = additional_config.get("enable_reduce_sample", False)
+        # Experimental graph-external LMHead exchange when DP metadata sync is skipped.
+        self.enable_lmhead_alltoallv = additional_config.get("enable_lmhead_alltoallv", False)
+        if not isinstance(self.enable_lmhead_alltoallv, bool):
+            raise ValueError("enable_lmhead_alltoallv must be a boolean")
+        if self.enable_lmhead_alltoallv and self.enable_reduce_sample:
+            raise ValueError("enable_lmhead_alltoallv requires enable_reduce_sample=false")
 
         self.mix_placement = additional_config.get("mix_placement", False)
         self._check_mix_placement()
