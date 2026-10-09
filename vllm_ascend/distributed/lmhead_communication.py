@@ -87,19 +87,10 @@ def scatter_lmhead_logits(logits: torch.Tensor, sizes: list[int], group: "GroupC
     if all(size == sizes[0] for size in sizes):
         return group.all_to_all(logits)
 
-    local_size = sizes[group.rank_in_group]
-    shard_size = logits.shape[1]
-    received = logits.new_empty((group.world_size * local_size, shard_size))
-    dist.all_to_all_single(
-        received,
-        logits.contiguous(),
-        output_split_sizes=[local_size] * group.world_size,
-        input_split_sizes=sizes,
-        group=group.device_group,
-    )
-    # Receive order is [source vocabulary shard, local token, vocabulary].
-    return (
-        received.view(group.world_size, local_size, shard_size)
-        .transpose(0, 1)
-        .reshape(local_size, group.world_size * shard_size)
+    return group.all_to_all(
+        logits,
+        scatter_dim=0,
+        gather_dim=-1,
+        scatter_sizes=sizes,
+        gather_sizes=[logits.shape[-1]] * group.world_size,
     )

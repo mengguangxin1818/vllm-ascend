@@ -23,7 +23,9 @@ Each LMHead call performs four phases:
    AllToAllV, yielding `[sum(row_counts), hidden_size]` on every rank.
 3. Compute logits for the local vocabulary shard.
 4. AllToAllV the logits back to their owning ranks, then concatenate vocabulary
-   shards in rank order. Existing sampling receives local full-vocabulary logits.
+   shards in rank order. This reuses the existing `group.all_to_all` wrapper with
+   `scatter_sizes=row_counts` and `gather_sizes=[local_vocab_size] * group_size`.
+   Existing sampling receives local full-vocabulary logits.
 
 Equal nonempty batches use ordinary AllGather and AllToAll. All-empty groups
 skip data exchange and GEMM after the length collective. Target dummy calls
@@ -53,8 +55,10 @@ pytest -v tests/ut/distributed/a3_4/test_lmhead_alltoallv.py
 
 The hardware test reuses the exchange and logits comparisons with HCCL device
 communication and a Gloo CPU metadata group. It includes zero send/receive splits
-and consecutive changing batches. It is a communication test, not a model ITL
-benchmark.
+and consecutive changing batches, and exercises the existing NPU list-based
+AllToAll wrapper for logits. The CPU adapter uses Gloo's `all_to_all_single`
+because Gloo does not support list-based AllToAll. It is a communication test,
+not a model ITL benchmark.
 
 This experimental path has not been validated on NPU hardware. Verify zero
 splits with the deployed torch_npu/HCCL version. Compare valid logits with the

@@ -61,17 +61,38 @@ class _TestGroup:
         self.device_group = process_group
         self.world_size = dist.get_world_size(process_group)
         self.rank_in_group = dist.get_rank(process_group)
+        self.rank = self.rank_in_group
 
     def all_gather(self, tensor, dim=0):
         parts = [torch.empty_like(tensor) for _ in range(self.world_size)]
         dist.all_gather(parts, tensor.contiguous(), group=self.device_group)
         return torch.cat(parts, dim=dim)
 
-    def all_to_all(self, tensor):
-        # Match GroupCoordinator's default: scatter rows, gather vocabulary.
-        received = torch.empty_like(tensor)
-        dist.all_to_all_single(received, tensor.contiguous(), group=self.device_group)
-        return torch.cat(received.chunk(self.world_size, dim=0), dim=-1)
+    def all_to_all(self, tensor, scatter_dim=0, gather_dim=-1, scatter_sizes=None, gather_sizes=None):
+        if dist.get_backend(self.device_group) == "hccl":
+            from vllm_ascend.distributed.device_communicators.npu_communicator import NPUCommunicator
+
+            # Exercise the deployed list-based wrapper, including zero splits.
+            return NPUCommunicator.all_to_all(self, tensor, scatter_dim, gather_dim, scatter_sizes, gather_sizes)
+
+        # Gloo lacks list-based all_to_all. Adapt the same row splits to its
+        # all_to_all_single and retain source-rank vocabulary concatenation.
+        assert scatter_dim == 0 and gather_dim == -1
+        send_sizes = (
+            scatter_sizes if scatter_sizes is not None else [tensor.shape[0] // self.world_size] * self.world_size
+        )
+        local_size = send_sizes[self.rank_in_group]
+        received = tensor.new_empty((self.world_size * local_size, tensor.shape[-1]))
+        if gather_sizes is not None:
+            assert gather_sizes == [tensor.shape[-1]] * self.world_size
+        dist.all_to_all_single(
+            received,
+            tensor.contiguous(),
+            input_split_sizes=send_sizes,
+            output_split_sizes=[local_size] * self.world_size,
+            group=self.device_group,
+        )
+        return torch.cat(received.split([local_size] * self.world_size, dim=0), dim=-1)
 
 
 def run_exchange_worker(rank, rendezvous, backend="gloo"):
