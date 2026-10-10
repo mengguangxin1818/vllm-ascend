@@ -198,7 +198,7 @@ class TestExistingPaddingPolicy(unittest.TestCase):
         method = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == method_name)
         namespace = {
             "torch": torch,
-            "get_ascend_config": lambda: SimpleNamespace(enable_lmhead_alltoallv=enabled),
+            "get_ascend_config": lambda: SimpleNamespace(enable_lmhead_variable_length=enabled),
             "should_skip_allreduce_across_dp_group": lambda *args, **kwargs: skip,
         }
         exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), namespace)
@@ -260,13 +260,13 @@ class TestLMHeadOption(unittest.TestCase):
         start = next(index for index, node in enumerate(constructor.body) if assigns(node, "enable_reduce_sample"))
         end = next(index for index, node in enumerate(constructor.body) if assigns(node, "mix_placement"))
         code = compile(ast.Module(body=constructor.body[start:end], type_ignores=[]), str(source), "exec")
-        for settings in ({}, {"enable_lmhead_alltoallv": True}, {"enable_reduce_sample": True}):
+        for settings in ({}, {"enable_lmhead_variable_length": True}, {"enable_reduce_sample": True}):
             config = SimpleNamespace()
             exec(code, {"self": config, "additional_config": settings})
-            self.assertEqual(config.enable_lmhead_alltoallv, settings.get("enable_lmhead_alltoallv", False))
+            self.assertEqual(config.enable_lmhead_variable_length, settings.get("enable_lmhead_variable_length", False))
         for settings in (
-            {"enable_lmhead_alltoallv": "true"},
-            {"enable_lmhead_alltoallv": 1},
+            {"enable_lmhead_variable_length": "true"},
+            {"enable_lmhead_variable_length": 1},
         ):
             with self.subTest(settings=settings), self.assertRaises(ValueError):
                 exec(code, {"self": SimpleNamespace(), "additional_config": settings})
@@ -277,20 +277,21 @@ class TestLMHeadOption(unittest.TestCase):
             code,
             {
                 "self": config,
-                "additional_config": {"enable_lmhead_alltoallv": True, "enable_reduce_sample": True},
+                "additional_config": {"enable_lmhead_variable_length": True, "enable_reduce_sample": True},
                 "logger": logger,
             },
         )
         logger.warning.assert_called_once_with(
-            "enable_lmhead_alltoallv is inactive when enable_reduce_sample=true; using the existing reduce-sample path."
+            "enable_lmhead_variable_length does not enable AllToAllV when enable_reduce_sample=true; "
+            "using the existing reduce-sample path."
         )
         self.assertTrue(config.enable_reduce_sample)
-        self.assertTrue(config.enable_lmhead_alltoallv)
+        self.assertTrue(config.enable_lmhead_variable_length)
 
 
 class TestLMHeadConfiguration(unittest.TestCase):
     def setUp(self):
-        self.config = SimpleNamespace(enable_lmhead_alltoallv=True, enable_reduce_sample=False)
+        self.config = SimpleNamespace(enable_lmhead_variable_length=True, enable_reduce_sample=False)
         self.vllm_config = SimpleNamespace(
             parallel_config=SimpleNamespace(
                 decode_context_parallel_size=1, prefill_context_parallel_size=1, pipeline_parallel_size=1
@@ -332,7 +333,7 @@ class TestLMHeadConfiguration(unittest.TestCase):
 
     def test_keep_existing_path(self):
         cases = [
-            (self.config, "enable_lmhead_alltoallv", False),
+            (self.config, "enable_lmhead_variable_length", False),
             (self.config, "enable_reduce_sample", True),
             (self.vllm_config.parallel_config, "decode_context_parallel_size", 2),
             (self.vllm_config.parallel_config, "prefill_context_parallel_size", 2),

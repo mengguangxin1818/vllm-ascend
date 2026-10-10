@@ -1,4 +1,4 @@
-# Experimental variable-size LMHead exchange
+# Variable-length LMHead processing
 
 Merge these settings into `--additional-config`:
 
@@ -6,22 +6,21 @@ Merge these settings into `--additional-config`:
 {
   "finegrained_tp_config": {"lmhead_tensor_parallel_size": 4},
   "enable_reduce_sample": false,
-  "enable_lmhead_alltoallv": true
+  "enable_lmhead_variable_length": true
 }
 ```
 
-The option defaults to false. It activates separately for target post-forward
-logits and eager MTP logits, only when the existing DP metadata synchronization
-is skipped. The initial implementation requires PP=PCP=DCP=1 and no LoRA.
-When the option is false, target and MTP LMHead TP use their pre-feature fixed
-padding lengths; DSpark keeps its pre-feature bucket calculation. When the
-option is true but variable-size exchange cannot activate, the existing LMHead
-TP path may shorten padding using synchronized DP token counts.
-Combining this option with reduce sampling emits a warning and retains the
-existing reduce-sample path; variable-size LMHead exchange remains inactive.
-Startup logs report activation for each model.
+The option defaults to false. When disabled, target and MTP LMHead TP use their
+pre-feature fixed padding lengths; DSpark keeps its pre-feature bucket
+calculation. When enabled, the existing LMHead TP path can shorten padding
+using synchronized DP token counts. If DP metadata synchronization is skipped,
+target post-forward logits and eager MTP logits can instead use variable-size
+AllToAllV exchange. This exchange requires PP=PCP=DCP=1, no LoRA, and
+`enable_reduce_sample=false`. With reduce sampling enabled, AllToAllV remains
+inactive and the existing reduce-sample path is used; dynamic padding may still
+apply. Startup logs report AllToAllV activation for each model.
 
-Each LMHead call performs four phases:
+When AllToAllV is active, each LMHead call performs four phases:
 
 1. AllGather one int32 valid row count per rank on the LMHead CPU group.
 2. Replicate local hidden states for each destination and collect them using

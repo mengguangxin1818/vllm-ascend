@@ -66,7 +66,7 @@ The following table lists additional configuration options available in vLLM Asc
 |-------------------------------------|------|---------|-----------------------------------------------------------------------------------------------------------|
 | `xlite_graph_config`                | dict | `{}`    | Configuration options for Xlite graph mode                                                                |
 | `finegrained_tp_config`             | dict | `{}`    | Configuration options for module tensor parallelism                                                       |
-| `enable_lmhead_alltoallv`            | bool | `False` | Experimental variable-size LMHead exchange when DP metadata synchronization is skipped; requires `enable_reduce_sample=false`. See [usage and limitations](lmhead_alltoallv.md). |
+| `enable_lmhead_variable_length`       | bool | `False` | Enable variable LMHead lengths through dynamic padding or, when eligible, AllToAllV exchange. See [usage and limitations](lmhead_alltoallv.md). |
 | `ascend_compilation_config`         | dict | `{}`    | Configuration options for ascend compilation                                                              |
 | `eplb_config`                       | dict | `{}`    | Configuration options for eplb |
 | `scheduler_config`                  | dict | `{}`    | Configuration options for Ascend scheduler extensions, including balance scheduling, recompute scheduling, ShortRequestFirst, and dynamic chunked pipeline parallel. |

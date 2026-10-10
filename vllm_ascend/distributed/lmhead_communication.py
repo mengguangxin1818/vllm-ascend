@@ -28,7 +28,7 @@ def configure_lmhead_alltoallv(
     config = get_ascend_config()
     parallel = vllm_config.parallel_config
     if not (
-        config.enable_lmhead_alltoallv
+        config.enable_lmhead_variable_length
         and not config.enable_reduce_sample
         and lmhead_tp_enable()
         and parallel.decode_context_parallel_size == 1
@@ -44,9 +44,9 @@ def configure_lmhead_alltoallv(
 
     processors = [module for module in model.modules() if isinstance(module, AscendLogitsProcessor)]
     if not processors:
-        raise ValueError("enable_lmhead_alltoallv requires AscendLogitsProcessor")
+        raise ValueError("enable_lmhead_variable_length requires AscendLogitsProcessor")
     if any(getattr(processor, "logits_as_input", False) for processor in processors):
-        raise ValueError("enable_lmhead_alltoallv does not support logits_as_input")
+        raise ValueError("enable_lmhead_variable_length does not support logits_as_input")
     for processor in processors:
         processor.lmhead_alltoallv_enabled = True
     return True

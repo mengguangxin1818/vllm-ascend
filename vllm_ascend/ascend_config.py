@@ -344,13 +344,13 @@ class AscendConfig:
 
         # Enable optimized reduce sampling scheme
         self.enable_reduce_sample = additional_config.get("enable_reduce_sample", False)
-        # Experimental graph-external LMHead exchange when DP metadata sync is skipped.
-        self.enable_lmhead_alltoallv = additional_config.get("enable_lmhead_alltoallv", False)
-        if not isinstance(self.enable_lmhead_alltoallv, bool):
-            raise ValueError("enable_lmhead_alltoallv must be a boolean")
-        if self.enable_lmhead_alltoallv and self.enable_reduce_sample:
+        # Enable variable LMHead length via dynamic padding or graph-external exchange.
+        self.enable_lmhead_variable_length = additional_config.get("enable_lmhead_variable_length", False)
+        if not isinstance(self.enable_lmhead_variable_length, bool):
+            raise ValueError("enable_lmhead_variable_length must be a boolean")
+        if self.enable_lmhead_variable_length and self.enable_reduce_sample:
             logger.warning(
-                "enable_lmhead_alltoallv is inactive when enable_reduce_sample=true; "
+                "enable_lmhead_variable_length does not enable AllToAllV when enable_reduce_sample=true; "
                 "using the existing reduce-sample path."
             )
 
