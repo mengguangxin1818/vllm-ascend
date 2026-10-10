@@ -26,6 +26,22 @@ from vllm_ascend import utils
 from vllm_ascend.utils import REGISTERED_ASCEND_OPS
 
 
+@pytest.mark.parametrize("is_draft_model", [False, True])
+@pytest.mark.parametrize("lmhead_tp", [False, True])
+@pytest.mark.parametrize("can_skip", [False, True])
+def test_should_skip_dp_metadata_sync(is_draft_model, lmhead_tp, can_skip):
+    config = SimpleNamespace()
+    with (
+        mock.patch.object(utils, "lmhead_tp_enable", return_value=lmhead_tp),
+        mock.patch.object(utils, "should_skip_allreduce_across_dp_group", return_value=can_skip) as skip,
+    ):
+        assert utils.should_skip_dp_metadata_sync(config, is_draft_model) == (can_skip and not lmhead_tp)
+        if lmhead_tp:
+            skip.assert_not_called()
+        else:
+            skip.assert_called_once_with(config, is_draft_model)
+
+
 class TestUtils(TestBase):
     def setUp(self):
         import importlib

@@ -1161,6 +1161,11 @@ def get_potential_max_tokens() -> int:
     return _potential_max_tokens
 
 
+def should_skip_dp_metadata_sync(vllm_config: VllmConfig, is_draft_model: bool = False) -> bool:
+    """LMHead TP needs synchronized token counts and graph modes across DP ranks."""
+    return not lmhead_tp_enable() and should_skip_allreduce_across_dp_group(vllm_config, is_draft_model)
+
+
 def should_skip_allreduce_across_dp_group(vllm_config: VllmConfig, is_draft_model: bool = False) -> bool:
     """Decide whether to skip the all-reduce across the DP group.
 
