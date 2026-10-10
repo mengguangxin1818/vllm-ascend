@@ -295,8 +295,10 @@ def test_lmhead_pad_size_uses_dp_sync(lmhead_tp, can_skip, method, dcp_size):
     proposer.method = method
     proposer.dcp_size = dcp_size
     with (
-        patch("vllm_ascend.spec_decode.llm_base_proposer.lmhead_tp_enable", return_value=lmhead_tp),
-        patch("vllm_ascend.spec_decode.llm_base_proposer.should_skip_allreduce_across_dp_group", return_value=can_skip),
+        patch(
+            "vllm_ascend.spec_decode.llm_base_proposer.should_skip_allreduce_across_dp_group",
+            return_value=can_skip and not lmhead_tp,
+        ),
     ):
         uses_synced_tokens = method == "mtp" and dcp_size == 1 and (lmhead_tp or not can_skip)
         assert proposer._get_lmhead_pad_size(8) == (8 if uses_synced_tokens else 16)

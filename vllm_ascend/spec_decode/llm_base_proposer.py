@@ -1312,7 +1312,7 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
         if (
             self.method == "mtp"
             and self.dcp_size == 1
-            and (lmhead_tp_enable() or not should_skip_allreduce_across_dp_group(self.vllm_config, is_draft_model=True))
+            and not should_skip_allreduce_across_dp_group(self.vllm_config, is_draft_model=True)
         ):
             # Both real and dummy runs synchronize num_input_tokens before
             # entering the runnable. Use that bucket for capture and replay;

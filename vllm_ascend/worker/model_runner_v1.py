@@ -715,7 +715,7 @@ class NPUModelRunner(GPUModelRunner):
         if self.dp_size == 1:
             return num_tokens, None, cudagraph_mode
 
-        if not lmhead_tp_enable() and should_skip_allreduce_across_dp_group(self.vllm_config, is_draft_model):
+        if should_skip_allreduce_across_dp_group(self.vllm_config, is_draft_model):
             num_tokens_after_padding = torch.tensor([num_tokens] * self.dp_size, device="cpu", dtype=torch.int32)
             return num_tokens, num_tokens_after_padding, cudagraph_mode
 
@@ -744,10 +744,7 @@ class NPUModelRunner(GPUModelRunner):
         if (
             self.dcp_size == 1
             and num_tokens_across_dp is not None
-            and (
-                lmhead_tp_enable()
-                or not should_skip_allreduce_across_dp_group(self.vllm_config, is_draft_model=False)
-            )
+            and not should_skip_allreduce_across_dp_group(self.vllm_config, is_draft_model=False)
         ):
             # This is CPU metadata from DP synchronization. Local hidden-state
             # lengths can differ, but every LMHead rank must use the same size.
@@ -2858,7 +2855,8 @@ class NPUModelRunner(GPUModelRunner):
                 allow_dp_padding=((cudagraph_mode != CUDAGraphMode.NONE)
                                   or enable_sp(self.vllm_config)
                                   or oproj_tp_enable()
-                                  or embedding_tp_enable()),
+                                  or embedding_tp_enable()
+                                  or lmhead_tp_enable()),
             )
 
             # Extract DP padding if there is any
