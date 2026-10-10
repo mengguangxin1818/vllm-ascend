@@ -63,7 +63,7 @@ from vllm_ascend.spec_decode.utils import (
     build_parallel_draft_seq_lens_cpu,
     patch_tensor_parallel_group,
 )
-from vllm_ascend.utils import check_gdn_layer, enable_sp, lmhead_tp_enable, should_skip_dp_metadata_sync
+from vllm_ascend.utils import check_gdn_layer, enable_sp, lmhead_tp_enable, should_skip_allreduce_across_dp_group
 
 # Currently we will fix block size to a small one since `num_reqs` can't be too large
 _PREPARE_INPUTS_BLOCK_SIZE = 4
@@ -1312,7 +1312,7 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
         if (
             self.method == "mtp"
             and self.dcp_size == 1
-            and not should_skip_dp_metadata_sync(self.vllm_config, is_draft_model=True)
+            and (lmhead_tp_enable() or not should_skip_allreduce_across_dp_group(self.vllm_config, is_draft_model=True))
         ):
             # Both real and dummy runs synchronize num_input_tokens before
             # entering the runnable. Use that bucket for capture and replay;

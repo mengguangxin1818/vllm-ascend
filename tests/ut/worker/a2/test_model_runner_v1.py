@@ -1094,8 +1094,11 @@ class TestDPMetadataSync(unittest.TestCase):
                 for can_skip in (False, True):
                     with (
                         self.subTest(is_draft_model=is_draft_model, lmhead_tp=lmhead_tp, can_skip=can_skip),
-                        patch("vllm_ascend.utils.lmhead_tp_enable", return_value=lmhead_tp),
-                        patch("vllm_ascend.utils.should_skip_allreduce_across_dp_group", return_value=can_skip),
+                        patch("vllm_ascend.worker.model_runner_v1.lmhead_tp_enable", return_value=lmhead_tp),
+                        patch(
+                            "vllm_ascend.worker.model_runner_v1.should_skip_allreduce_across_dp_group",
+                            return_value=can_skip,
+                        ),
                         patch("vllm_ascend.worker.model_runner_v1.get_dp_group"),
                         patch("vllm_ascend.worker.model_runner_v1.dist.all_reduce", side_effect=synchronize) as reduce,
                     ):

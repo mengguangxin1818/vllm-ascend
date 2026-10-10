@@ -185,7 +185,7 @@ from vllm_ascend.utils import (
     lmhead_tp_enable,
     oproj_tp_enable,
     set_potential_max_tokens,
-    should_skip_dp_metadata_sync,
+    should_skip_allreduce_across_dp_group,
 )
 from vllm_ascend.worker.dcp_utils import DCPAsyncSpecDecodeRebuildResult, DCPManager
 from vllm_ascend.worker.npu_input_batch import NPUInputBatch
@@ -715,7 +715,7 @@ class NPUModelRunner(GPUModelRunner):
         if self.dp_size == 1:
             return num_tokens, None, cudagraph_mode
 
-        if should_skip_dp_metadata_sync(self.vllm_config, is_draft_model):
+        if not lmhead_tp_enable() and should_skip_allreduce_across_dp_group(self.vllm_config, is_draft_model):
             num_tokens_after_padding = torch.tensor([num_tokens] * self.dp_size, device="cpu", dtype=torch.int32)
             return num_tokens, num_tokens_after_padding, cudagraph_mode
 
@@ -744,7 +744,10 @@ class NPUModelRunner(GPUModelRunner):
         if (
             self.dcp_size == 1
             and num_tokens_across_dp is not None
-            and not should_skip_dp_metadata_sync(self.vllm_config, is_draft_model=False)
+            and (
+                lmhead_tp_enable()
+                or not should_skip_allreduce_across_dp_group(self.vllm_config, is_draft_model=False)
+            )
         ):
             # This is CPU metadata from DP synchronization. Local hidden-state
             # lengths can differ, but every LMHead rank must use the same size.
