@@ -1318,7 +1318,8 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
     def _get_lmhead_pad_size(self, num_input_tokens: int) -> int:
         pad_size = self.vllm_config.scheduler_config.max_num_seqs * self.runner.uniform_decode_query_len
         if (
-            self.method == "mtp"
+            get_ascend_config().enable_lmhead_alltoallv
+            and self.method == "mtp"
             and self.dcp_size == 1
             and not should_skip_allreduce_across_dp_group(self.vllm_config, is_draft_model=True)
         ):

@@ -189,27 +189,34 @@ class TestLMHeadExchange(unittest.TestCase):
 
 
 class TestExistingPaddingPolicy(unittest.TestCase):
-    """Keep the two preceding commits' padding policies intact when disabled."""
+    """Restore fixed padding when the option is off; retain dynamic padding when on."""
 
-    def _load_method(self, relative_path, class_name, method_name, skip):
+    def _load_method(self, relative_path, class_name, method_name, skip, enabled):
         source = _SOURCE.parents[1] / relative_path
         tree = ast.parse(source.read_text())
         cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name)
         method = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == method_name)
-        namespace = {"torch": torch, "should_skip_allreduce_across_dp_group": lambda *args, **kwargs: skip}
+        namespace = {
+            "torch": torch,
+            "get_ascend_config": lambda: SimpleNamespace(enable_lmhead_alltoallv=enabled),
+            "should_skip_allreduce_across_dp_group": lambda *args, **kwargs: skip,
+        }
         exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), namespace)
         return namespace[method_name]
 
     def test_target_padding(self):
         runner = SimpleNamespace(max_num_reqs=32, uniform_decode_query_len=6, dcp_size=1, vllm_config=None)
         counts = torch.tensor([6, 12, 0, 6], dtype=torch.int32)
-        for skip in (False, True):
-            method = self._load_method("worker/model_runner_v1.py", "NPUModelRunner", "_get_lmhead_pad_size", skip)
-            self.assertEqual(method(runner, counts), 192 if skip else 12)
-            self.assertEqual(method(runner, None), 192)
-            runner.dcp_size = 2
-            self.assertEqual(method(runner, counts), 192)
-            runner.dcp_size = 1
+        for enabled in (False, True):
+            for skip in (False, True):
+                method = self._load_method(
+                    "worker/model_runner_v1.py", "NPUModelRunner", "_get_lmhead_pad_size", skip, enabled
+                )
+                self.assertEqual(method(runner, counts), 12 if enabled and not skip else 192)
+                self.assertEqual(method(runner, None), 192)
+                runner.dcp_size = 2
+                self.assertEqual(method(runner, counts), 192)
+                runner.dcp_size = 1
 
     def test_mtp_padding(self):
         proposer = SimpleNamespace(
@@ -218,15 +225,20 @@ class TestExistingPaddingPolicy(unittest.TestCase):
             vllm_config=SimpleNamespace(scheduler_config=SimpleNamespace(max_num_seqs=32)),
             runner=SimpleNamespace(uniform_decode_query_len=6),
         )
-        for skip in (False, True):
-            method = self._load_method(
-                "spec_decode/llm_base_proposer.py", "AscendSpecDecodeBaseProposer", "_get_lmhead_pad_size", skip
-            )
-            self.assertEqual(method(proposer, 6), 192 if skip else 6)
-            self.assertEqual(method(proposer, 384), 192)
-            proposer.dcp_size = 2
-            self.assertEqual(method(proposer, 6), 192)
-            proposer.dcp_size = 1
+        for enabled in (False, True):
+            for skip in (False, True):
+                method = self._load_method(
+                    "spec_decode/llm_base_proposer.py",
+                    "AscendSpecDecodeBaseProposer",
+                    "_get_lmhead_pad_size",
+                    skip,
+                    enabled,
+                )
+                self.assertEqual(method(proposer, 6), 6 if enabled and not skip else 192)
+                self.assertEqual(method(proposer, 384), 192)
+                proposer.dcp_size = 2
+                self.assertEqual(method(proposer, 6), 192)
+                proposer.dcp_size = 1
 
 
 class TestLMHeadOption(unittest.TestCase):

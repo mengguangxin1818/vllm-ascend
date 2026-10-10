@@ -744,7 +744,8 @@ class NPUModelRunner(GPUModelRunner):
     def _get_lmhead_pad_size(self, num_tokens_across_dp: torch.Tensor | None) -> int:
         pad_size = self.max_num_reqs * self.uniform_decode_query_len
         if (
-            self.dcp_size == 1
+            get_ascend_config().enable_lmhead_alltoallv
+            and self.dcp_size == 1
             and num_tokens_across_dp is not None
             and not should_skip_allreduce_across_dp_group(self.vllm_config, is_draft_model=False)
         ):
