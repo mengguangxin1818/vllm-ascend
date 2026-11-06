@@ -355,8 +355,15 @@ class Glm5NextDecoderLayer(nn.Module):
         # decoder-layer reduce_scatter after attention completes it (DSv4 pattern).
         # MTP layers use the non-mHC path which has no sp_reduce_scatter, so
         # their o_proj must still reduce normally.
+        self.o_proj_fused_rs = False
         if self.is_sequence_parallel and not is_mtp_layer:
             self.self_attn.o_proj.reduce_results = False
+            # Fold the reduce_scatter below into the KDA o_proj GEMM when
+            # VLLM_ASCEND_GLM_KDA_OPROJ_MM_RS is set and the fused kernel's
+            # static constraints hold. DSA layers are left untouched.
+            from vllm_ascend.models.glm5next.kda import maybe_enable_kda_oproj_mm_rs
+
+            self.o_proj_fused_rs = maybe_enable_kda_oproj_mm_rs(self.self_attn)
         self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         if self.mhc and not is_mtp_layer:
@@ -455,7 +462,7 @@ class Glm5NextDecoderLayer(nn.Module):
             positions=positions,
         )
 
-        if self.is_sequence_parallel:
+        if self.is_sequence_parallel and not self.o_proj_fused_rs:
             x = sp_reduce_scatter(x)
 
         # Apply post-attention mixing, pre-FFN mixing, then input RMSNorm.
