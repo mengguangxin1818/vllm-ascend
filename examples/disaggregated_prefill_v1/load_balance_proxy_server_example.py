@@ -816,6 +816,24 @@ def auth_headers(request_id: str) -> dict[str, str]:
     }
 
 
+def _has_multimodal(req_data: dict) -> bool:
+    """True when the request carries non-text content.
+
+    Decode-side token reuse feeds raw ids to the engine and skips chat
+    templating, which also skips multimodal preprocessing, so image/audio
+    requests must keep the original text path.
+    """
+    for message in req_data.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if content is not None and not isinstance(content, str):
+            return True
+    if req_data.get("prompt_embeds") is not None:
+        return True
+    return False
+
+
 def build_prefill_request(req_data: dict) -> dict:
     payload = req_data.copy()
     payload["kv_transfer_params"] = {
@@ -829,6 +847,9 @@ def build_prefill_request(req_data: dict) -> dict:
     payload["stream"] = False
     payload["max_tokens"] = 1
     payload["min_tokens"] = 1
+    # Return the prefiller's prompt token ids so the decoder can skip
+    # re-tokenizing the same prompt (see assign_instances).
+    payload["return_token_ids"] = True
     if "max_completion_tokens" in payload:
         payload["max_completion_tokens"] = 1
     payload.pop("stream_options", None)
@@ -970,7 +991,24 @@ async def assign_instances(
         raise
 
     response_json = response.json()
-    kv_transfer_params = response_json.get("kv_transfer_params", {})
+    # NOTE: the key can be present with a null value, so ``or {}`` instead of
+    # a dict default.
+    kv_transfer_params = response_json.get("kv_transfer_params") or {}
+    prompt_token_ids = response_json.get("prompt_token_ids")
+    if (
+        prompt_token_ids
+        and "messages" in req_data
+        and not _has_multimodal(req_data)
+        and not req_data.get("echo")
+    ):
+        # Decode-side token reuse: vLLM pops
+        # kv_transfer_params["prompt_token_ids"] in its renderer and feeds the
+        # ids straight to the engine, skipping chat templating and
+        # tokenization on the decoder while keeping tool-choice validation,
+        # adjust_request and text-out detokenization. The ids come from the
+        # prefiller's own tokenizer and template, so the decoder's prefix
+        # hashes stay identical to the text path.
+        kv_transfer_params["prompt_token_ids"] = prompt_token_ids
     if kv_transfer_params:
         req_data["kv_transfer_params"] = kv_transfer_params
     prefiller_cached_tokens = extract_cached_tokens(response_json)
