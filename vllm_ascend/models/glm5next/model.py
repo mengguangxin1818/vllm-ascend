@@ -356,14 +356,20 @@ class Glm5NextDecoderLayer(nn.Module):
         # MTP layers use the non-mHC path which has no sp_reduce_scatter, so
         # their o_proj must still reduce normally.
         self.o_proj_fused_rs = False
+        self.in_proj_fused_ag = False
         if self.is_sequence_parallel and not is_mtp_layer:
             self.self_attn.o_proj.reduce_results = False
-            # Fold the reduce_scatter below into the KDA o_proj GEMM when
-            # VLLM_ASCEND_GLM_KDA_OPROJ_MM_RS is set and the fused kernel's
-            # static constraints hold. DSA layers are left untouched.
-            from vllm_ascend.models.glm5next.kda import maybe_enable_kda_oproj_mm_rs
+            # Fold the two collectives around attention into the KDA GEMMs
+            # when their env switches are set and the fused kernels' static
+            # constraints hold. The two sides are armed independently, and
+            # DSA layers are left untouched by both.
+            from vllm_ascend.models.glm5next.kda import (
+                maybe_enable_kda_inproj_ag_mm,
+                maybe_enable_kda_oproj_mm_rs,
+            )
 
             self.o_proj_fused_rs = maybe_enable_kda_oproj_mm_rs(self.self_attn)
+            self.in_proj_fused_ag = maybe_enable_kda_inproj_ag_mm(self.self_attn)
         self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         if self.mhc and not is_mtp_layer:
@@ -454,7 +460,7 @@ class Glm5NextDecoderLayer(nn.Module):
 
         # Attention needs the full token sequence; mHC above ran on the SP
         # shard. Gather for attention, scatter back afterward (DSv4 pattern).
-        if self.is_sequence_parallel:
+        if self.is_sequence_parallel and not self.in_proj_fused_ag:
             x = sp_all_gather(x)[: positions.shape[0]]
 
         x = self.self_attn(
