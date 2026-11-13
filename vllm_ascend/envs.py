@@ -87,6 +87,10 @@ env_variables: dict[str, Callable[[], Any]] = {
     # (safe for Ascend 910B/A3). Set to a positive value to override when
     # auto-detection is unavailable or for debugging UB overflow issues.
     "VLLM_ASCEND_ROPE_UB_SIZE_KB": lambda: int(os.getenv("VLLM_ASCEND_ROPE_UB_SIZE_KB") or 0),
+    # Reuse first-draft DP metadata for the validated FULL-graph, four-token
+    # bucket. Non-sensitive; 1 enables (default), 0 keeps the draft collective.
+    # Restart all DP workers after changing this setting.
+    "VLLM_ASCEND_MERGE_MTP_DP_SYNC": lambda: bool(int(os.getenv("VLLM_ASCEND_MERGE_MTP_DP_SYNC", "1"))),
 }
 
 # end-env-vars-definition

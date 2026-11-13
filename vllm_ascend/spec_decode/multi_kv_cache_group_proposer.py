@@ -48,6 +48,20 @@ class AscendMultiKVCacheGroupMTPProposer(AscendEagleProposer):
     """
 
     _glm_draft_graph_supported = True
+    supports_mtp_dp_sync_reuse = True
+
+    def predict_first_dp_sync_tokens(self, num_tokens: int, uniform_decode: bool, has_lora: bool) -> int:
+        """Predict the existing first-pass sync argument without touching KV state."""
+        if self.needs_extra_input_slots or self.parallel_drafting:
+            raise ValueError("First-pass input expansion is not supported by DP sync reuse")
+        if self.use_cuda_graph:
+            _, descriptor = self.runner.cudagraph_dispatcher.dispatch(
+                num_tokens=num_tokens,
+                uniform_decode=uniform_decode,
+                has_lora=has_lora,
+            )
+            return descriptor.num_tokens
+        return num_tokens
 
     def _get_draft_layer_kv_cache_groups(self, kv_cache_config: KVCacheConfig) -> dict[str, int]:
         """Helper: map each draft attention layer to its physical group id.
